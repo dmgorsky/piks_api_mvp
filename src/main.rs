@@ -6,7 +6,7 @@ use std::time::Duration;
 use axum::http::header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE};
 use axum::http::{HeaderValue, Method};
 use axum::Router;
-use bb8::Pool;
+use bb8::{ManageConnection, Pool};
 use dotenv::dotenv;
 use surreal_bb8::temp::compiletime_with_config::SurrealConnectionManager;
 use surreal_bb8::temp::config::Config;
@@ -32,7 +32,7 @@ mod responses;
 pub mod router;
 mod token;
 // pub mod application;
-// pub mod data;
+pub mod data;
 
 #[derive(Clone, Debug)]
 pub struct AppContext {
@@ -67,6 +67,15 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let db_url = env_config.database_url.clone();
     let sur_mgr: SurrealConnectionManager<Ws> =
         SurrealConnectionManager::new(db_url.as_str(), config);
+    let sur_db = sur_mgr.connect().await.unwrap();
+    sur_db
+        .signin(Root {
+            username: "root",
+            password: "root",
+        })
+        .await?;
+    sur_db.use_ns("test").use_db("test").await.unwrap();
+
     let pool = Pool::builder()
         .connection_timeout(Duration::from_secs(5))
         .retry_connection(true)
@@ -80,18 +89,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
         Ok(_) => info!("Connected to surrealDB!"),
         Err(_) => error!("Not connected to surrealDB"),
     }
-
-    surrealdb_connection
-        .signin(Root {
-            username: "root",
-            password: "root",
-        })
-        .await?;
-    surrealdb_connection
-        .use_ns("test")
-        .use_db("test")
-        .await
-        .unwrap();
 
     let redis_client = match redis::Client::open(env_config.redis_url.to_owned()) {
         Ok(client) => {

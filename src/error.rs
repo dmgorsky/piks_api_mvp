@@ -23,12 +23,12 @@ pub enum PiksHttpError {
     UnprocessableEntity(RedisError),
     DatabaseError(surrealdb::Error),
     ConnectionPoolError(surrealdb::Error),
-    UnauthorizedConnectionPoolError(String),
+    // UnauthorizedConnectionPoolError(String),
     PooledConnectionManagerError(String),
     UserAlreadyExists,
     ErrorHashingPassword(Box<dyn Error>),
     WrongCredentials,
-    InvalidToken,
+    // InvalidToken,
     InvalidTokenExpiredSession,
     TokenUserNotFound,
     CouldNotRefreshToken,
@@ -74,10 +74,10 @@ impl Into<(axum::http::StatusCode, axum::Json<serde_json::Value>)> for PiksHttpE
                 StatusCode::INTERNAL_SERVER_ERROR,
                 format!("Connection pool error: {}", e),
             ),
-            PiksHttpError::UnauthorizedConnectionPoolError(e) => (
-                StatusCode::UNAUTHORIZED,
-                format!("Connection pool error: {}", e),
-            ),
+            // PiksHttpError::UnauthorizedConnectionPoolError(e) => (
+            //     StatusCode::UNAUTHORIZED,
+            //     format!("Connection pool error: {}", e),
+            // ),
             PiksHttpError::PooledConnectionManagerError(e) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 format!("Connection pool manager error: {}", e),
@@ -94,7 +94,7 @@ impl Into<(axum::http::StatusCode, axum::Json<serde_json::Value>)> for PiksHttpE
                 StatusCode::BAD_REQUEST,
                 "Invalid email or password".to_string(),
             ),
-            PiksHttpError::InvalidToken => (StatusCode::UNAUTHORIZED, "Invalid token".to_string()),
+            // PiksHttpError::InvalidToken => (StatusCode::UNAUTHORIZED, "Invalid token".to_string()),
             PiksHttpError::InvalidTokenExpiredSession => (
                 StatusCode::UNAUTHORIZED,
                 "Token is invalid or session has expired".to_string(),

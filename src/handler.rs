@@ -12,6 +12,7 @@ use serde_json::json;
 use time::Duration;
 use tracing::log::info;
 
+use crate::data::users_repository::*;
 use crate::error::PiksHttpError;
 use crate::error::PiksHttpError::*;
 use crate::jwt_auth::JWTAuthMiddleware;
@@ -71,25 +72,9 @@ pub async fn register_user_handler(
     State(context): State<Arc<AppContext>>,
     Json(body): Json<RegisterUserSchema>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
-    let surr_client = context
-        .surreal_connection_pool
-        .get()
-        .await
-        .map_err(|e| PooledConnectionManagerError(e.to_string()).into())?;
-    let _ = surr_client
-        .use_ns("test")
-        .use_db("test")
-        .await
-        .map_err(|e| ConnectionPoolError(e).into())?;
-    let mut user_exists: Option<i32> = surr_client
-        .query("select count() from type::table($table) where email=$email")
-        .bind(("table", "users"))
-        .bind(("email", body.email.to_owned().to_ascii_lowercase()))
-        .await
-        .map_err(|e| DatabaseError(e).into())?
-        .take((0, "count"))
-        .map_err(|e| DatabaseError(e).into())?;
-    if user_exists.is_some_and(|contents| contents != 0) {
+    let users_repo = UsersRepository::prepare(&context);
+    let user: Option<User> = users_repo.get_by_email(&body.email).await?;
+    if user.is_some_and(|contents| contents.email != "") {
         return Err(UserAlreadyExists.into());
     }
 
@@ -100,7 +85,7 @@ pub async fn register_user_handler(
         .map_err(|e| ErrorHashingPassword(Box::new(e)).into())
         .map(|hash| hash.to_string())?;
 
-    let mut user_to_create = User {
+    let user_to_create = User {
         id: None,
         id_for_token: uuid::Uuid::new_v4(),
         name: body.name,
@@ -112,15 +97,8 @@ pub async fn register_user_handler(
         created_at: Some(Utc::now()),
         updated_at: Some(Utc::now()),
     };
-    info!("{:#?}", user_to_create);
-    let created_user_record: Option<User> = surr_client
-        .create((
-            "users",
-            surrealdb::sql::Id::from(surrealdb::sql::Uuid::from(user_to_create.id_for_token)),
-        ))
-        .content(&user_to_create)
-        .await
-        .map_err(|e| DatabaseError(e).into())?;
+
+    let _created_user_record: Option<User> = users_repo.create_user(&user_to_create).await?;
 
     let user_response = json!({
         "status": "success",
@@ -135,25 +113,8 @@ pub async fn login_user_handler(
     State(context): State<Arc<AppContext>>,
     Json(body): Json<LoginUserSchema>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
-    let surr_client = context
-        .surreal_connection_pool
-        .get()
-        .await
-        .map_err(|e| PooledConnectionManagerError(e.to_string()).into())?;
-    let _ = surr_client
-        .use_ns("test")
-        .use_db("test")
-        .await
-        .map_err(|e| ConnectionPoolError(e).into())?;
-    let user: Option<User> = surr_client
-        .query("select * from type::table($table) where email=$email")
-        .bind(("table", "users"))
-        .bind(("email", body.email.to_owned().to_ascii_lowercase()))
-        .await
-        .map_err(|e| DatabaseError(e).into())?
-        .take(0)
-        .map_err(|e| DatabaseError(e).into())?;
-    // dbg!(&user);
+    let users_repo = UsersRepository::prepare(&context);
+    let user: Option<User> = users_repo.get_by_email(&body.email).await?;
     let user = user.ok_or(WrongCredentials.into())?;
 
     //TODO check stored salt
@@ -254,8 +215,6 @@ pub async fn refresh_access_token_handler(
     cookie_jar: CookieJar,
     State(context): State<Arc<AppContext>>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
-    let message = "could not refresh access token";
-
     let refresh_token = cookie_jar
         .get("refresh_token")
         .map(|cookie| cookie.value().to_string())
@@ -283,15 +242,8 @@ pub async fn refresh_access_token_handler(
     let user_id_uuid = uuid::Uuid::parse_str(&redis_token_user_id)
         .map_err(|_| InvalidTokenExpiredSession.into())?;
 
-    let surr_client = context
-        .surreal_connection_pool
-        .get()
-        .await
-        .map_err(|e| PooledConnectionManagerError(e.to_string()).into())?;
-    let user: Option<User> = surr_client
-        .select(("users", surrealdb::sql::Uuid::from(user_id_uuid)))
-        .await
-        .map_err(|e| DatabaseError(e).into())?;
+    let users_repo = UsersRepository::prepare(&context);
+    let user = users_repo.get_by_id(user_id_uuid).await?;
     let user = user.ok_or_else(|| TokenUserNotFound.into())?;
 
     let access_token_details = generate_token(
@@ -347,8 +299,6 @@ pub async fn logout_handler(
     Extension(auth_guard): Extension<JWTAuthMiddleware>,
     State(context): State<Arc<AppContext>>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
-    let message = "Token is invalid or session has expired";
-
     let refresh_token = cookie_jar
         .get("refresh_token")
         .map(|cookie| cookie.value().to_string())
@@ -439,8 +389,6 @@ pub async fn get_me_handler(
 #[test]
 fn check_pwd() {
     let old_pwd = "$argon2id$v=19$m=19456,t=2,p=1$9AsP6slYGxninrDicZGtWA$Ha5bDCdB/Cst12jwF9AFxQdFnu6lIFAjQTj6VtChspM";
-    // let ph = PasswordHash::parse(old_pwd, Encoding::B64).unwrap();
-    // println!("{}", ph.salt.unwrap().to_string());
     let check = match PasswordHash::new(old_pwd) {
         Ok(parsed_hash) => {
             dbg!(&parsed_hash);
@@ -454,6 +402,5 @@ fn check_pwd() {
             false
         }
     };
-    dbg!(&check);
     assert_eq!(check, true);
 }
